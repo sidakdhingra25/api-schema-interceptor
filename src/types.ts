@@ -2,22 +2,32 @@
 export type InterceptorMode = "observe" | "warn" | "strict";
 
 // ── Schema abstraction (version-agnostic) ─────────────
+
+/** One issue from `safeParse` error lists; may appear inside union branches. */
+export type ParseIssue = {
+  path: (string | number)[];
+  message: string;
+  code?: string;
+  expected?: unknown;
+  received?: unknown;
+  format?: unknown;
+  validation?: unknown;
+  minimum?: unknown;
+  maximum?: unknown;
+  /**
+   * Zod 3 `invalid_union`: one entry per branch; each is ZodError-like (`issues` / `errors`).
+   */
+  unionErrors?: ReadonlyArray<{
+    errors?: ParseIssue[];
+    issues?: ParseIssue[];
+  }>;
+};
+
 export interface SafeParseResult {
   success: boolean;
   data?: unknown;
   error?: {
-    errors: Array<{
-      path: (string | number)[];
-      message: string;
-      // Common Zod issue metadata (not all fields exist on every issue type).
-      code?: string;
-      expected?: string;
-      received?: string;
-      format?: string;
-      validation?: string;
-      minimum?: number;
-      maximum?: number;
-    }>;
+    errors: ParseIssue[];
   };
 }
 
