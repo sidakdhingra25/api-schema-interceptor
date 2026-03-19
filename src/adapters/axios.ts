@@ -5,6 +5,7 @@
  */
 
 import type { SchemaInterceptor } from "../registry";
+import type { RouteSchema } from "../types";
 
 /** Axios-like request config (minimal shape we need; avoids hard dependency on axios). */
 interface AxiosLikeRequestConfig {
@@ -78,7 +79,7 @@ function isJsonBody(data: unknown): data is Record<string, unknown> | unknown[] 
  */
 export function enableAxios(
   axiosInstance: AxiosLikeInstance,
-  interceptor: SchemaInterceptor
+  interceptor: SchemaInterceptor<Record<string, RouteSchema>>
 ): () => void {
   const requestId = axiosInstance.interceptors.request.use(
     (config: AxiosLikeRequestConfig) => {

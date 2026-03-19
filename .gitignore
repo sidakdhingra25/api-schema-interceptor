@@ -28,3 +28,7 @@ logs/*
 pnpm-lock.yaml
 pnpm-workspace.yaml
 .pnpm-store
+
+# ignore improvements
+improvements/
+.version1/

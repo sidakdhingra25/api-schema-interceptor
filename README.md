@@ -70,6 +70,9 @@ export interface InterceptorConfig {
   routes: Record<string, RouteSchema>;
   redact?: string[];
   destinations?: Destination[];
+  sharedStore?: boolean;
+  warnOnUnmatched?: boolean;
+  debug?: boolean;
   dashboardPort?: number;
 }
 ```
@@ -115,7 +118,8 @@ export interface LogEntry {
 export interface ValidationResult {
   valid: boolean;
   errors: FieldError[];
-  log: LogEntry;
+  /** Only set when a route matched and a log entry was written. */
+  log?: LogEntry;
 }
 ```
 
@@ -282,7 +286,7 @@ teardownAxios(); // ejects both request and response interceptors
 
 ## Logging and Observability
 
-All validations (request and response) generate a `LogEntry` and are pushed to the internal `logStore`. You can access these logs through the `SchemaInterceptor` instance.
+When **a registered route matches**, each request/response validation generates a `LogEntry` and is pushed according to `destinations`. Unmatched URLs do **not** create log entries (optional `warnOnUnmatched` console warning only). You can access logs through the `SchemaInterceptor` instance (`getLogs()` reads that instance’s `LogStore`, or `globalLogStore` when `sharedStore: true`).
 
 ### Access logs
 
@@ -471,7 +475,7 @@ It does **not** replace or wrap your API client—it patches `globalThis.fetch` 
 - **Route key** = `"METHOD /path"` or `"METHOD /path/:id"`. Only the **pathname** of the URL is matched (host and query are ignored).
 - **Validation** runs only when the (method, pathname) matches a registered route and the route has a `request` and/or `response` Zod schema.
 - **Non-JSON** bodies are skipped (no validation, no error).
-- **Log store** is a singleton: all interceptor instances push to the same in-memory store (max 1000 entries, then trim). You can `getLogs()`, `clearLogs()`, or `subscribe(callback)` for real-time dashboards.
+- **Log store:** each interceptor has its **own** `LogStore` by default; set `sharedStore: true` to use the exported **`globalLogStore`** singleton. Capacity is capped (1000 entries, oldest dropped, one warning). Use `getLogs()`, `clearLogs()`, or `subscribe(callback)` on the instance (or `globalLogStore` when shared).
 
 ---
 
@@ -522,6 +526,33 @@ export const interceptor = createInterceptor({
 });
 ```
 
+If your routes live in a separate module and you want the route keys to stay
+type-safe, use `defineRoutes`:
+
+```ts
+import { createInterceptor, defineRoutes } from "api-schema-interceptor";
+import { z } from "zod";
+
+export const routes = defineRoutes({
+  "POST /login": {
+    request: z.object({
+      email: z.string().email(),
+      password: z.string().min(1),
+    }),
+    response: z.object({
+      accessToken: z.string().min(1),
+    }),
+  },
+});
+
+export const interceptor = createInterceptor({
+  mode: "warn",
+  routes,
+  redact: ["password", "accessToken"],
+  destinations: ["console", "memory"],
+});
+```
+
 **2. Enable the interceptor** once (e.g. at app bootstrap or in a root React component):
 
 ```ts
@@ -534,6 +565,62 @@ interceptor.enable();
 
 ---
 
+## Implemented Features
+- **Fetch interception (JSON only)**: when a request/response body is valid JSON and the route matches, the interceptor validates it and logs the result.
+- **Route matching by method + pathname**: URLs are matched against registered keys like `"POST /login"`; query/host are ignored.
+- **Warn on unmatched routes** (`warnOnUnmatched`, default `true`): if there is no matching schema, the interceptor emits a `console.warn` and does **not** create a log entry.
+- **Request vs response validation**: request bodies are validated against the route’s `request` schema, response bodies against the route’s `response` schema (direction-aware).
+- **Strict / warn / observe modes**:
+  - `"observe"`: log only
+  - `"warn"`: log + `console.warn` on failures
+  - `"strict"`: log + `console.error`, then throw on the first validation failure
+- **Human-friendly field errors**:
+  - missing field → `field is missing`
+  - type mismatch → `got a <type>, expected a <type>`
+  - format mismatch (e.g. `.email()`) → `invalid format — expected a valid <format>`
+- **Axios adapter** (`enableAxios`) using the same interceptor behavior.
+- **Optional shared log store** (`sharedStore: true`) via `globalLogStore` and a 1000-entry capacity cap.
+- **Test helper** `validateMatch(...)` to check “does this route match and would it validate?” without HTTP, logs, or throwing.
+
+## Console Output Examples
+Below are the real console shapes you should expect when something does not match.
+
+### 1) Path does not match any registered route
+If `warnOnUnmatched` is enabled, you’ll get a warning and **no** failure box, because no log entry is written:
+
+```text
+[api-schema-interceptor] No schema registered for POST /unknown
+  Registered routes: GET /health
+  → If this route should be validated, add it to your routes config.
+```
+
+### 2) Request validation failure (direction: `request`)
+Example (bad request body for `"POST /login"`):
+
+```text
+┌─ api-schema-interceptor ──────────────────────────────────────┐
+│ FAIL  POST /login  [request]                                  │
+│                                                                │
+│   ✗  email      invalid format — expected a valid email       │
+│   ✗  password   field is missing                            │
+│                                                                │
+│ mode: warn · 2 errors · 12:34:56.789                        │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### 3) Response validation failure (direction: `response`)
+Example (bad response body for `"POST /login"`):
+
+```text
+┌─ api-schema-interceptor ──────────────────────────────────────┐
+│ FAIL  POST /login  [response]                                 │
+│                                                                │
+│   ✗  accessToken   got a number, expected a string          │
+│                                                                │
+│ mode: warn · 1 error · 12:34:56.789                         │
+└────────────────────────────────────────────────────────────────┘
+```
+
 ## API reference
 
 ### Package exports
@@ -542,7 +629,8 @@ interceptor.enable();
 | --------------------------- | -------------------------------------------------- | ------------------------------------------------------ |
 | `createInterceptor(config)` | `(config: InterceptorConfig) => SchemaInterceptor` | Creates a new interceptor instance.                    |
 | `SchemaInterceptor`         | `class`                                            | The interceptor class (for typing or subclassing).     |
-| `logStore`                  | `LogStore`                                         | Singleton in-memory log store.                         |
+| `globalLogStore`           | `LogStore`                                         | Shared log store when `config.sharedStore` is true.    |
+| `LogStore`                 | `class`                                            | In-memory store; one per interceptor by default.       |
 | `enableAxios(axios, interceptor)` | `(instance, interceptor) => () => void` | Attach validation to an axios instance; returns teardown. |
 | `InterceptorConfig`         | `interface`                                        | Config passed to `createInterceptor`.                  |
 | `InterceptorMode`           | `"observe" \| "warn" \| "strict"`                  | Validation behavior.                                   |
@@ -550,6 +638,7 @@ interceptor.enable();
 | `LogEntry`                  | `interface`                                        | One validation log entry.                              |
 | `ValidationResult`          | `interface`                                        | Return type of `validateRequest` / `validateResponse`. |
 | `FieldError`                | `interface`                                        | One field-level error.                                 |
+| `validateMatch(...)`       | `function`                                        | Test helper to validate a payload for a matched route (direction-aware). |
 | `Destination`               | `"console" \| "memory" \| "dashboard"`             | Where to send logs.                                    |
 
 ---
@@ -585,7 +674,7 @@ Called via `createInterceptor(config)`. Options come from `InterceptorConfig` (s
 | `clearLogs()`                                      | `() => void`                                                                            | Clears the log store.                                                                                                                                                                    |
 | `subscribe(fn)`                                    | `(fn: (entry: LogEntry) => void) => () => void`                                         | Subscribes to new log entries. Returns an unsubscribe function.                                                                                                                          |
 
-**Note:** `getLogs()`, `clearLogs()`, and `subscribe` use the **shared** singleton `logStore`; all interceptor instances see the same logs.
+**Note:** `getLogs()`, `clearLogs()`, and `subscribe` use this instance’s `LogStore`. Pass `sharedStore: true` in config to share **`globalLogStore`** across instances.
 
 ---
 
@@ -599,6 +688,9 @@ interface InterceptorConfig {
   routes: Record<string, RouteSchema>;
   redact?: string[]; // default []
   destinations?: Destination[]; // default ["console", "memory"]
+  sharedStore?: boolean; // default false — use globalLogStore when true
+  warnOnUnmatched?: boolean; // default true — console.warn when no route matches
+  debug?: boolean; // log route match line in non-production
   dashboardPort?: number; // reserved for future use
 }
 ```
@@ -626,7 +718,7 @@ interface LogEntry {
   timestamp: number;
   method: string;
   path: string; // full URL as received
-  routePattern: string; // e.g. "POST /login"
+  routePattern: string; // e.g. "/login" (the registered path pattern)
   direction: "request" | "response";
   valid: boolean;
   errors: FieldError[];
@@ -653,14 +745,15 @@ interface FieldError {
 interface ValidationResult {
   valid: boolean;
   errors: FieldError[];
-  log: LogEntry;
+  /** Only set when a route matched and a log entry was written. */
+  log?: LogEntry;
 }
 ```
 
 #### `Destination`
 
 - **`"console"`** – Print PASS/FAIL lines (and in warn/strict, field errors) to the console.
-- **`"memory"`** – Store entries in the singleton log store (always stored; this flag affects whether console output is used).
+- **`"memory"`** – Store entries in this interceptor’s `LogStore` (or `globalLogStore` if `sharedStore: true`).
 - **`"dashboard"`** – Reserved for future use.
 
 ---
@@ -673,6 +766,9 @@ interface ValidationResult {
 | `routes`       | `Record<string, RouteSchema>` | required                | Map of route key → request/response Zod schemas.                                                             |
 | `redact`       | `string[]`                    | `[]`                    | Keys to mask (case-insensitive) in logged payloads; value becomes `"[REDACTED]"`. Nested objects are walked. |
 | `destinations` | `Destination[]`               | `["console", "memory"]` | Where to send logs.                                                                                          |
+| `sharedStore`  | `boolean`                     | `false`                 | If true, use `globalLogStore` so multiple instances share logs.                                              |
+| `warnOnUnmatched` | `boolean`                  | `true`                  | Console warning when fetch hits an unregistered route (no log entry).                                         |
+| `debug`        | `boolean`                     | `false`                 | Extra match logging when `NODE_ENV !== "production"`.                                                        |
 
 **Route key format:** `"METHOD /path"` or `"METHOD /path/:param"`. Method is case-insensitive. Path is pathname only (no origin, query is stripped for matching). Examples:
 
@@ -707,7 +803,7 @@ Passing validations: in `observe` mode, PASS lines are not printed; in `warn` an
 ## Destinations & redaction
 
 - **console** – Human-readable PASS/FAIL lines (and errors in warn/strict).
-- **memory** – All entries are always stored in the singleton store (up to 1000, then oldest are dropped). The `destinations` array controls whether **console** output is used, not whether memory is used.
+- **memory** – When listed in `destinations`, entries are stored in this interceptor’s `LogStore` (or `globalLogStore` if `sharedStore: true`), up to 1000 entries then oldest dropped.
 - **redact** – Keys listed here (e.g. `password`, `accessToken`) are replaced with `"[REDACTED]"` in the `data` field of `LogEntry` and in any logged payload. Matching is case-insensitive and recurs into nested objects.
 
 ---
@@ -869,7 +965,7 @@ const responseResult = interceptor.validateResponse(
 );
 ```
 
-Log entries are still pushed when you call `validateRequest` or `validateResponse`. Use `enable()` for `fetch`, `enableAxios(axios, interceptor)` for axios, or call the validate methods from your custom client for the same logging and strict-mode behavior.
+Log entries are pushed when you call `validateRequest` or `validateResponse` **and** a route matches (same as fetch). Use `enable()` for `fetch`, `enableAxios(axios, interceptor)` for axios, or call the validate methods from your custom client for the same logging and strict-mode behavior.
 
 ---
 
@@ -896,13 +992,20 @@ After changing the interceptor source, run `pnpm build` (or `npm run build`) in 
 
 ---
 
+## Zod compatibility
+
+- The package expects **Zod** (or any schema with a `safeParse` method) for route schemas.
+- **`zod` is a peer dependency** (`>=3.20.0 <5`); install it in your app. The library does not bundle Zod at runtime.
+
+---
+
 ## Limitations & caveats
 
 - **`fetch`** is intercepted via `enable()`. **Axios** is supported via `enableAxios(axiosInstance, interceptor)`. Other clients (`XMLHttpRequest`, etc.) need `validateRequest`/`validateResponse` called manually or a custom adapter.
 - **JSON only.** Request/response bodies that are not parsed as JSON are skipped (no validation, no error).
 - **Pathname only.** Matching uses the URL pathname; host and query are ignored. Different hosts with the same pathname share one route.
-- **Single global fetch.** Only one interceptor should call `enable()` at a time; multiple instances all push to the same `logStore`.
-- **Log store is global.** All interceptors share the same in-memory store (max 1000 entries). `getLogs()` and `subscribe` are process-wide.
+- **Single global fetch.** Only one interceptor should call `enable()` at a time; behavior is undefined if multiple wrappers stack.
+- **Log stores are per instance** unless you set `sharedStore: true` (then they share `globalLogStore`, max 1000 entries).
 - **`dashboard` destination** is reserved; behavior is not implemented yet.
 - **Browser and Node 18+.** Requires `globalThis.fetch`. In Node, ensure the interceptor is enabled in the same process that runs the `fetch` calls (e.g. via instrumentation in Next).
 

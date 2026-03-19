@@ -8,12 +8,14 @@
     "build": "tsc -p tsconfig.build.json",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "dependencies": {
-    "zod": "^4.3.6"
+  "dependencies": {},
+  "peerDependencies": {
+    "zod": ">=3.20.0 <5"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "zod": "^4.3.6"
   },
   "files": [
     "dist"

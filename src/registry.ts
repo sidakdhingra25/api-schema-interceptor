@@ -1,8 +1,18 @@
-import type { RouteSchema, InterceptorConfig, InterceptorMode, Destination, ValidationResult, LogEntry, FieldError } from "./types";
+import type {
+  RouteSchema,
+  InterceptorConfig,
+  InterceptorMode,
+  Destination,
+  ValidationResult,
+  LogEntry,
+  FieldError,
+  InferRouteTypes,
+  InferSchema,
+} from "./types";
 import { matchRoute, parseRouteKey } from "./path-matcher";
 import { validate } from "./validator";
 import { redact } from "./redactor";
-import { logStore } from "./log-store";
+import { LogStore, globalLogStore } from "./log-store";
 
 let idCounter = 0;
 function nextId(): string {
@@ -11,19 +21,31 @@ function nextId(): string {
 
 /**
  * The core interceptor instance returned by createInterceptor().
+ * Generic over the routes map for type inference.
  */
-export class SchemaInterceptor {
+export class SchemaInterceptor<TRoutes extends Record<string, RouteSchema>> {
   private routes: Map<string, RouteSchema> = new Map();
-  public mode: InterceptorMode;
+  readonly mode: InterceptorMode;
   private redactKeys: string[];
   private destinations: Destination[];
-  private _enabled = false;
-  private _originalFetch: typeof globalThis.fetch | null = null;
+  private store: LogStore;
+  private enabled = false;
+  private originalFetch?: typeof globalThis.fetch;
+  private warnOnUnmatched: boolean;
+  private debug: boolean;
 
-  constructor(config: InterceptorConfig) {
+  // Phantom field for type inference only; never used at runtime.
+  readonly types!: InferRouteTypes<TRoutes>;
+
+  constructor(config: InterceptorConfig & { routes: TRoutes }) {
     this.mode = config.mode ?? "observe";
     this.redactKeys = config.redact ?? [];
     this.destinations = config.destinations ?? ["console", "memory"];
+    this.warnOnUnmatched = config.warnOnUnmatched ?? true;
+    this.debug = !!config.debug;
+
+    // Per-instance log store by default; opt-in shared store if requested.
+    this.store = config.sharedStore ? globalLogStore : new LogStore();
 
     for (const [key, schema] of Object.entries(config.routes)) {
       this.routes.set(key, schema);
@@ -43,12 +65,45 @@ export class SchemaInterceptor {
     return [...this.routes.keys()];
   }
 
+  getRoute(routeKey: string): RouteSchema | undefined {
+    return this.routes.get(routeKey);
+  }
+
   // ── Validate request or response data ──────────────
+  // Typed overload (Phase 3)
+  validateRequest<K extends keyof TRoutes>(
+    method: string,
+    url: string,
+    body: InferSchema<TRoutes[K]["request"]>
+  ): ValidationResult;
+  // Backward-compatible untyped overload
+  validateRequest(method: string, url: string, body: unknown): ValidationResult;
+  // Implementation
   validateRequest(method: string, url: string, body: unknown): ValidationResult {
     return this.runValidation(method, url, body, "request");
   }
 
-  validateResponse(method: string, url: string, body: unknown, statusCode?: number): ValidationResult {
+  // Typed overload (Phase 3)
+  validateResponse<K extends keyof TRoutes>(
+    method: string,
+    url: string,
+    body: InferSchema<TRoutes[K]["response"]>,
+    statusCode?: number
+  ): ValidationResult;
+  // Backward-compatible untyped overload
+  validateResponse(
+    method: string,
+    url: string,
+    body: unknown,
+    statusCode?: number
+  ): ValidationResult;
+  // Implementation
+  validateResponse(
+    method: string,
+    url: string,
+    body: unknown,
+    statusCode?: number
+  ): ValidationResult {
     return this.runValidation(method, url, body, "response", statusCode);
   }
 
@@ -62,18 +117,28 @@ export class SchemaInterceptor {
     const routeKeys = [...this.routes.keys()];
     const match = matchRoute(method, url, routeKeys);
 
-    const { method: parsedMethod, pattern } = match
-      ? parseRouteKey(match.routeKey)
-      : { method: method.toUpperCase(), pattern: url };
-
-    let errors: FieldError[] = [];
-    if (match) {
-      const schema = this.routes.get(match.routeKey);
-      const zodSchema = direction === "request" ? schema?.request : schema?.response;
-      if (zodSchema) {
-        errors = validate(zodSchema, body);
+    if (!match) {
+      if (this.warnOnUnmatched) {
+        console.warn(
+          `[api-schema-interceptor] No schema registered for ${method.toUpperCase()} ${url}\n` +
+            `  Registered routes: ${this.getRegisteredRoutes().join(", ") || "(none)"}\n` +
+            `  → If this route should be validated, add it to your routes config.`
+        );
       }
+      return { valid: true, errors: [] };
     }
+
+    const { method: parsedMethod, pattern } = parseRouteKey(match.routeKey);
+
+    if (this.debug && process.env.NODE_ENV !== "production") {
+      console.log(
+        `[api-schema-interceptor:debug] ${method.toUpperCase()} ${url} → ${match.routeKey}`
+      );
+    }
+
+    const schema = this.routes.get(match.routeKey);
+    const routeSchema = direction === "request" ? schema?.request : schema?.response;
+    const errors: FieldError[] = routeSchema ? validate(routeSchema, body) : [];
 
     const safeData = this.redactKeys.length
       ? redact(body, this.redactKeys)
@@ -84,7 +149,8 @@ export class SchemaInterceptor {
       timestamp: Date.now(),
       method: parsedMethod,
       path: url,
-      routePattern: match ? `${parsedMethod} ${pattern}` : `${parsedMethod} ${url}`,
+      // route pattern alone (e.g. "/login") so console output is `METHOD ${routePattern}`
+      routePattern: `${pattern}`,
       direction,
       valid: errors.length === 0,
       errors,
@@ -93,7 +159,7 @@ export class SchemaInterceptor {
       statusCode,
     };
 
-    logStore.push(entry, this.destinations, this.mode);
+    this.store.push(entry, this.destinations);
 
     // strict mode throws on validation failure
     if (!entry.valid && this.mode === "strict") {
@@ -106,10 +172,25 @@ export class SchemaInterceptor {
 
   // ── Global fetch interception ──────────────────────
   enable() {
-    if (this._enabled) return;
-    if (typeof globalThis.fetch === "undefined") return;
+    if (this.enabled) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn(
+          "[api-schema-interceptor] enable() called but interceptor is already enabled. " +
+            "Call disable() first if you want to re-enable."
+        );
+      }
+      return;
+    }
 
-    this._originalFetch = globalThis.fetch;
+    if (typeof globalThis.fetch === "undefined") {
+      console.warn(
+        "[api-schema-interceptor] enable() called but globalThis.fetch is not defined. " +
+          "Requires a browser or Node 18+ environment."
+      );
+      return;
+    }
+
+    this.originalFetch = globalThis.fetch;
     const self = this;
 
     globalThis.fetch = async function interceptedFetch(
@@ -119,53 +200,61 @@ export class SchemaInterceptor {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
       const method = init?.method ?? "GET";
 
-      // validate request body
+      // validate request body — parse and validate in separate steps so strict-mode throws propagate
       if (init?.body) {
+        let parsedBody: unknown = null;
         try {
-          const parsed = JSON.parse(
+          parsedBody = JSON.parse(
             typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body as ArrayBuffer)
           );
-          self.validateRequest(method, url, parsed);
         } catch {
-          // non-JSON body or parsing error — skip validation
+          // genuinely non-JSON body — skip validation
+        }
+        if (parsedBody !== null) {
+          self.validateRequest(method, url, parsedBody);
         }
       }
 
       // call original fetch
-      const response = await self._originalFetch!.call(globalThis, input, init);
+      const response = await self.originalFetch!.call(globalThis, input, init);
 
       // clone response so we can read body without consuming it
       const clone = response.clone();
+      let responseData: unknown = null;
       try {
-        const responseData = await clone.json();
-        self.validateResponse(method, url, responseData, response.status);
+        responseData = await clone.json();
       } catch {
         // non-JSON response — skip validation
+      }
+      if (responseData !== null) {
+        self.validateResponse(method, url, responseData, response.status);
       }
 
       return response;
     };
 
-    this._enabled = true;
+    this.enabled = true;
   }
 
   disable() {
-    if (!this._enabled || !this._originalFetch) return;
-    globalThis.fetch = this._originalFetch;
-    this._originalFetch = null;
-    this._enabled = false;
+    if (!this.enabled) return;
+    if (this.originalFetch) {
+      globalThis.fetch = this.originalFetch;
+      this.originalFetch = undefined;
+    }
+    this.enabled = false;
   }
 
   // ── Access logs ────────────────────────────────────
   getLogs() {
-    return logStore.getAll();
+    return this.store.getAll();
   }
 
   clearLogs() {
-    logStore.clear();
+    this.store.clear();
   }
 
   subscribe(fn: (entry: LogEntry) => void) {
-    return logStore.subscribe(fn);
+    return this.store.subscribe(fn);
   }
 }
