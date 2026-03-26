@@ -15,10 +15,6 @@ function getBranchIssues(branch: unknown): RawIssue[] {
   return [];
 }
 
-/**
- * Zod 3: `unionErrors` = one ZodError-like object per branch.
- * Zod 4: on `invalid_union`, `errors` is `Issue[][]` (one issue array per branch).
- */
 function getInvalidUnionBranches(issue: RawIssue): RawIssue[][] {
   const rec = issue as Record<string, unknown>;
 
@@ -40,10 +36,7 @@ function getInvalidUnionBranches(issue: RawIssue): RawIssue[][] {
   return [];
 }
 
-/**
- * Flatten `invalid_union` into **all** field-level issues from **every** branch
- * (recursively), instead of picking a single "best" branch.
- */
+
 function flattenIssues(issues: RawIssue[]): RawIssue[] {
   const flat: RawIssue[] = [];
 
@@ -117,10 +110,7 @@ function issueToFieldError(issue: RawIssue, data: unknown): FieldError {
   };
 }
 
-/**
- * Validate `data` against a schema with a safeParse method.
- * Returns a list of field-level errors (empty if valid).
- */
+
 export function validate(schema: AnySchema | undefined, data: unknown): FieldError[] {
   if (!schema || typeof schema.safeParse !== "function") {
     return [];

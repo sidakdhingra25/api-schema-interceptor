@@ -4,30 +4,21 @@ type Subscriber = (entry: LogEntry) => void;
 
 const MAX_ENTRIES = 1000;
 
-/**
- * In-memory log store with pub/sub support.
- * Used by the interceptor core. Each SchemaInterceptor instance
- * should own its own LogStore by default; a global singleton is
- * exported only for explicit shared-store usage.
- */
 export class LogStore {
   private entries: LogEntry[] = [];
   private subscribers: Set<Subscriber> = new Set();
   private warnedCap = false;
 
   push(entry: LogEntry, destinations: Destination[]) {
-    // store in memory only when configured
     if (destinations.includes("memory")) {
       this.entries.push(entry);
       this.trim();
     }
 
-    // console output
     if (destinations.includes("console")) {
       this.printToConsole(entry);
     }
 
-    // notify subscribers
     this.subscribers.forEach((fn) => fn(entry));
   }
 
@@ -117,5 +108,4 @@ export class LogStore {
   }
 }
 
-// Global singleton for explicit shared-store usage (config.sharedStore)
 export const globalLogStore = new LogStore();

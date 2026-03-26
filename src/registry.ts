@@ -19,10 +19,6 @@ function nextId(): string {
   return `log_${Date.now()}_${++idCounter}`;
 }
 
-/**
- * The core interceptor instance returned by createInterceptor().
- * Generic over the routes map for type inference.
- */
 export class SchemaInterceptor<TRoutes extends Record<string, RouteSchema>> {
   private routes: Map<string, RouteSchema> = new Map();
   readonly mode: InterceptorMode;
@@ -34,17 +30,15 @@ export class SchemaInterceptor<TRoutes extends Record<string, RouteSchema>> {
   private warnOnUnmatched: boolean;
   private debug: boolean;
 
-  // Phantom field for type inference only; never used at runtime.
   readonly types!: InferRouteTypes<TRoutes>;
 
   constructor(config: InterceptorConfig & { routes: TRoutes }) {
     this.mode = config.mode ?? "observe";
     this.redactKeys = config.redact ?? [];
     this.destinations = config.destinations ?? ["console", "memory"];
-    this.warnOnUnmatched = config.warnOnUnmatched ?? true;
+    this.warnOnUnmatched = config.warnOnUnmatched ?? false;
     this.debug = !!config.debug;
 
-    // Per-instance log store by default; opt-in shared store if requested.
     this.store = config.sharedStore ? globalLogStore : new LogStore();
 
     for (const [key, schema] of Object.entries(config.routes)) {
@@ -52,7 +46,6 @@ export class SchemaInterceptor<TRoutes extends Record<string, RouteSchema>> {
     }
   }
 
-  // ── Route registration at runtime ──────────────────
   register(routeKey: string, schema: RouteSchema) {
     this.routes.set(routeKey, schema);
   }
@@ -69,35 +62,28 @@ export class SchemaInterceptor<TRoutes extends Record<string, RouteSchema>> {
     return this.routes.get(routeKey);
   }
 
-  // ── Validate request or response data ──────────────
-  // Typed overload (Phase 3)
   validateRequest<K extends keyof TRoutes>(
     method: string,
     url: string,
     body: InferSchema<TRoutes[K]["request"]>
   ): ValidationResult;
-  // Backward-compatible untyped overload
   validateRequest(method: string, url: string, body: unknown): ValidationResult;
-  // Implementation
   validateRequest(method: string, url: string, body: unknown): ValidationResult {
     return this.runValidation(method, url, body, "request");
   }
 
-  // Typed overload (Phase 3)
   validateResponse<K extends keyof TRoutes>(
     method: string,
     url: string,
     body: InferSchema<TRoutes[K]["response"]>,
     statusCode?: number
   ): ValidationResult;
-  // Backward-compatible untyped overload
   validateResponse(
     method: string,
     url: string,
     body: unknown,
     statusCode?: number
   ): ValidationResult;
-  // Implementation
   validateResponse(
     method: string,
     url: string,
@@ -130,13 +116,21 @@ export class SchemaInterceptor<TRoutes extends Record<string, RouteSchema>> {
 
     const { method: parsedMethod, pattern } = parseRouteKey(match.routeKey);
 
-    if (this.debug && process.env.NODE_ENV !== "production") {
+    if (
+      this.debug &&
+      (typeof process === "undefined" || process.env.NODE_ENV !== "production")
+    ) {
       console.log(
         `[api-schema-interceptor:debug] ${method.toUpperCase()} ${url} → ${match.routeKey}`
       );
     }
 
     const schema = this.routes.get(match.routeKey);
+    const shouldValidate = schema?.validate ?? true;
+    if (!shouldValidate) {
+      return { valid: true, errors: [] };
+    }
+
     const routeSchema = direction === "request" ? schema?.request : schema?.response;
     const errors: FieldError[] = routeSchema ? validate(routeSchema, body) : [];
 
@@ -156,12 +150,11 @@ export class SchemaInterceptor<TRoutes extends Record<string, RouteSchema>> {
       errors,
       data: typeof safeData === "object" && safeData !== null ? safeData as Record<string, unknown> : {},
       mode: this.mode,
-      statusCode,
+      ...(statusCode !== undefined && { statusCode }),
     };
 
     this.store.push(entry, this.destinations);
 
-    // strict mode throws on validation failure
     if (!entry.valid && this.mode === "strict") {
       const msg = errors.map((e) => `${e.path.join(".")}: ${e.message}`).join("; ");
       throw new Error(`[api-interceptor] Schema violation on ${method} ${url}: ${msg}`);
@@ -170,10 +163,9 @@ export class SchemaInterceptor<TRoutes extends Record<string, RouteSchema>> {
     return { valid: entry.valid, errors, log: entry };
   }
 
-  // ── Global fetch interception ──────────────────────
   enable() {
     if (this.enabled) {
-      if (process.env.NODE_ENV !== "production") {
+      if (typeof process === "undefined" || process.env.NODE_ENV !== "production") {
         console.warn(
           "[api-schema-interceptor] enable() called but interceptor is already enabled. " +
             "Call disable() first if you want to re-enable."
@@ -245,7 +237,6 @@ export class SchemaInterceptor<TRoutes extends Record<string, RouteSchema>> {
     this.enabled = false;
   }
 
-  // ── Access logs ────────────────────────────────────
   getLogs() {
     return this.store.getAll();
   }

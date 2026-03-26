@@ -4,9 +4,12 @@
   "description": "",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "api-schema-interceptor": "bin/api-schema-interceptor.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test"
   },
   "dependencies": {},
   "peerDependencies": {
@@ -18,7 +21,8 @@
     "zod": "^4.3.6"
   },
   "files": [
-    "dist"
+    "dist",
+    "bin"
   ],
   "keywords": [],
   "author": "",

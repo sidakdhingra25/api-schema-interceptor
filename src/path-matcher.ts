@@ -55,7 +55,7 @@ export function matchRoute(
       const paramNames = [...pattern.matchAll(/:(\w+)/g)].map((m) => m[1]);
       const params: Record<string, string> = {};
       paramNames.forEach((name, i) => {
-        params[name] = match[i + 1];
+        params[name] = match[i + 1] ?? "";
       });
       return { routeKey: key, params };
     }

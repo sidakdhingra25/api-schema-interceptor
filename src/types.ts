@@ -39,6 +39,7 @@ export interface AnySchema {
 export interface RouteSchema {
   request?: AnySchema;
   response?: AnySchema;
+  validate?: boolean;
 }
 
 // ── Config the user passes to createInterceptor ───────
@@ -52,7 +53,7 @@ export interface InterceptorConfig {
   debug?: boolean;
 }
 
-export type Destination = "console" | "memory" | "dashboard";
+export type Destination = "console" | "memory";
 
 // ── Validation result returned per field ──────────────
 export interface FieldError {

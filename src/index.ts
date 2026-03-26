@@ -1,15 +1,3 @@
-/**
- * api-schema-interceptor
- *
- * Validate API request/response payloads against Zod schemas.
- * Log mismatches, redact sensitive fields, and optionally throw.
- *
- * Usage:
- *   import { createInterceptor } from "api-schema-interceptor"
- *   const interceptor = createInterceptor({ ... })
- *   interceptor.enable()
- */
-
 export { SchemaInterceptor } from "./registry";
 export { LogStore, globalLogStore } from "./log-store";
 export { enableAxios } from "./adapters/axios";
@@ -28,34 +16,18 @@ import { SchemaInterceptor } from "./registry";
 import { matchRoute, parseRouteKey } from "./path-matcher";
 import { validate } from "./validator";
 
-/**
- * Create a new interceptor from a config object.
- */
 export function createInterceptor<TRoutes extends Record<string, RouteSchema>>(
   config: InterceptorConfig & { routes: TRoutes }
 ): SchemaInterceptor<TRoutes> {
   return new SchemaInterceptor<TRoutes>(config);
 }
 
-/**
- * Helper to define routes with preserved type information when
- * they are declared in a separate module.
- */
 export function defineRoutes<TRoutes extends Record<string, RouteSchema>>(
   routes: TRoutes
 ): TRoutes {
   return routes;
 }
 
-/**
- * Test-time helper: checks whether the interceptor config matches the given
- * method/url, and if so, validates `body` against the route schema.
- *
- * Important:
- * - No logs are produced.
- * - No strict-mode throwing is performed.
- * - Schema selection uses `direction` directly (no fallback).
- */
 export function validateMatch(
   interceptor: SchemaInterceptor<any>,
   method: string,
@@ -79,6 +51,11 @@ export function validateMatch(
   const routePattern = `${pattern}`;
 
   const routeSchema = interceptor.getRoute(match.routeKey);
+  const shouldValidate = routeSchema?.validate ?? true;
+  if (!shouldValidate) {
+    return { matched: true, routePattern, valid: true, errors: [] };
+  }
+
   const schema = direction === "request" ? routeSchema?.request : routeSchema?.response;
   const errors = validate(schema, body);
 
