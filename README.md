@@ -1,5 +1,7 @@
 ## API Schema Interceptor
 
+> **v2.0** removes in-memory logging (`getLogs`, `subscribe`, `destinations`, etc.). Output is **console only**. See [CHANGELOG.md](./CHANGELOG.md).
+
 This package helps you validate your API requests and responses against your Zod schemas.
 When a call matches a route you registered, it checks the JSON and logs whether it passed or failed.
 
@@ -17,7 +19,7 @@ Here’s what happens, step by step:
 | 2 | You attach `request` and/or `response` Zod schemas | It knows what “valid JSON” should look like |
 | 3 | Your app makes an API call | It watches the JSON traffic (for `fetch`, and Axios if enabled) |
 | 4 | The call matches one of your route keys | It checks the JSON against the schema |
-| 5 | Validation passes | Nothing “bad” happens; you can still keep logs depending on your mode |
+| 5 | Validation passes | Nothing is printed for success (only failures produce console output) |
 | 6 | Validation fails | It prints a clear console message showing what field is wrong |
 | 7 | You set `validate: false` for a route | It ignores that route completely (no validation + no console error for that route) |
 
@@ -41,40 +43,45 @@ pnpm add api-schema-interceptor zod
 
 ## React setup (manual)
 
-If you are using React (not Next.js app router), you typically:
+For **Vite**, **CRA**, **React Router**, etc. (not Next.js App Router). There is no React component in this package—call **`interceptor.enable()`** once at startup.
 
-1. Create your interceptor config file (example: `lib/api-schemas.ts`)
-2. Enable it at app startup (and disable it when you unmount, if you want)
+### 1. Schema module
 
-Example config:
-
-```ts
-import { createInterceptor } from "api-schema-interceptor";
-import { z } from "zod";
-
-const healthSchema = z.object({ status: z.literal("ok") });
-const apiErrorSchema = z.object({ error: z.string() });
-
-export const interceptor = createInterceptor({
-  mode: "warn",
-  warnOnUnmatched: false,
-  routes: {
-    "GET /api/health": {
-      response: z.union([healthSchema, apiErrorSchema]),
-    },
-    "POST /api/items": {
-      request: z.object({ title: z.string() }),
-      response: z.union([z.object({ id: z.string(), title: z.string() }), apiErrorSchema]),
-    },
-  },
-});
+```bash
+npx api-schema-interceptor init
 ```
 
-Then enable it in your app root:
+Pick **React**. The CLI creates **`lib/api-schemas.ts`** or **`src/lib/api-schemas.ts`**. Export **`interceptor`** from `createInterceptor({ ... })` (or add that file yourself).
 
-```ts
+### 2. Enable
+
+Call **`interceptor.enable()`** in your **browser entry file**, right **before** **`createRoot(...).render(...)`** (or **`ReactDOM.render`**).
+
+| Setup | Entry file (typical) |
+| --- | --- |
+| React (Vite) | `src/main.tsx` / `main.jsx` / `index.tsx` |
+| CRA | `src/index.tsx` / `index.js` |
+
+Don’t rely on **`useEffect`** for the first `enable()`—a child may **`fetch`** before that runs. Import **`interceptor`** with a path that resolves from that entry file (e.g. `../lib/api-schemas` or `./lib/api-schemas`).
+
+### 3. Example
+
+```tsx
+import { createRoot } from "react-dom/client";
+import { interceptor } from "./lib/api-schemas";
+import App from "./App";
+import "./index.css";
+
 interceptor.enable();
+
+createRoot(document.getElementById("root")!).render(<App />);
 ```
+
+Fix the import to match your layout. Wrappers (`StrictMode`, router, …) go **inside** `render`; keep **`enable()`** above it.
+
+### 4. `disable()` (optional)
+
+Rarely needed; use for tests or when you restore real **`fetch`**.
 
 ---
 
@@ -192,15 +199,6 @@ export const interceptor = createInterceptor({
   // If true, you get a console warning when a route doesn't exist in your schema
   warnOnUnmatched: true,
 
-  // Hide these keys before logging
-  redact: ["password", "token"],
-
-  // Where to send logs
-  destinations: ["console", "memory"],
-
-  // Share one memory store across multiple interceptors (optional)
-  sharedStore: true,
-
   // Extra debug logs for route matching (in non-production)
   debug: true,
 
@@ -229,7 +227,7 @@ export const interceptor = createInterceptor({
 
 ### What you see when validation fails
 
-If **`console`** is in `destinations` and a request/response **does not** match your Zod schema, the package prints a **boxed message** in the browser DevTools console (or terminal). The exact API depends on `mode`:
+When a request/response **does not** match your Zod schema, the package prints a **boxed message** in the browser DevTools console (or terminal). The exact API depends on `mode`:
 
 | `mode` | On failure |
 | --- | --- |
@@ -240,20 +238,31 @@ If **`console`** is in `destinations` and a request/response **does not** match 
 **Example shape** (wording depends on the field; this matches how failures are formatted):
 
 ```text
-┌─ api-schema-interceptor ──────────────────────────────────────┐
-│ FAIL  GET /api/users/:id  [response]                          │
-│                                                                │
-│   ✗  email  invalid format — expected a valid email           │
-│   ✗  name   field is missing                                  │
-│                                                                │
-│ mode: warn · 2 errors · 12:34:56.789Z                          │
-└────────────────────────────────────────────────────────────────┘
+┌─ api-schema-interceptor ───────────────────────────────────────────────────────────────────────┐
+│ FAIL  GET /api/users/:id  [response]                                                         │
+│                                                                                               │
+│   ✗  email  invalid format — expected a valid email                                            │
+│   ✗  name   field is missing                                                                   │
+│                                                                                               │
+│ mode: warn · 2 lines / 2 underlying · 12:34:56.789Z                                          │
+└───────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **`FAIL … [request]`** = the JSON you **sent** didn’t match `request`.
 - **`FAIL … [response]`** = the JSON you **received** didn’t match `response`.
+- **Footer `K lines / M underlying`:** **`M`** is always the number of validation issues (`FieldError` count). **`K`** is how many `✗` lines were printed inside the box (after optional array aggregation). When issues merge into one line, **`K`** is smaller than **`M`**; when every issue has its own line, **`K`** equals **`M`**.
+- **`strict` mode:** the box is printed **first**, then the interceptor **throws** (so you always see the failure in the console before the exception).
 
-Successful calls can show a short **✓** line when `mode` is `warn` or `strict` (see `log-store.ts`). If you set `validate: false` on a route, that route is skipped—no box and no ✓ line for it.
+Successful validation does not print anything to the console (only failures produce output). If you set `validate: false` on a route, that route is skipped—no box for it.
+
+### Array error aggregation (`consoleAggregation`)
+
+When the same structural problem repeats across **array elements** (for example `0.title`, `1.title`, … with the same expected/received types), the default **`"array"`** mode groups those issues by a key derived from the **path pattern** (numbers become `*`), **`expected`**, and **`received`**—**not** by Zod’s free-form `message`, so groups stay stable.
+
+- **Single numeric segment in the path** (e.g. `*.title`): multiple matching issues print as **one** `✗` line with a short index summary (contiguous ranges or comma-separated indices).
+- **More than one numeric segment** (nested arrays, e.g. `*.posts.*.id`): v2.2 does **not** merge those into a single summary line; you get **one line per issue**. Richer nested summaries are **planned**; the source includes a **`// TODO v2: nested aggregation`** marker.
+
+Set **`consoleAggregation: "off"`** if you prefer the older behavior: **one console row per `FieldError`**, with literal paths like `0.title`.
 
 ## Tables (simple reference)
 
@@ -264,10 +273,8 @@ Successful calls can show a short **✓** line when `mode` is `warn` or `strict`
 | `mode` | `"observe" \| "warn" \| "strict"` | `"observe"` | **observe** = only notice problems; **warn** = shout in the console; **strict** = stop the app when something is wrong (good for tests) |
 | `routes` | `Record<string, RouteSchema>` | required | The list of URLs you care about and the rules for each one |
 | `warnOnUnmatched` | `boolean` | `false` | If **on**, you get a heads-up when the app calls a URL you never listed |
-| `redact` | `string[]` | `[]` | Field names (like `password`) that should be hidden in logs |
-| `destinations` | `("console" \| "memory")[]` | `["console","memory"]` | **console** = print to the browser/terminal; **memory** = keep a copy you can read in code |
-| `sharedStore` | `boolean` | `false` | If **on**, every interceptor instance shares the same saved logs |
 | `debug` | `boolean` | `false` | If **on** (and not production), prints extra “which route matched?” lines |
+| `consoleAggregation` | `"off" \| "array"` | `"array"` | **`array`** = collapse repeated **same-shape** array element errors into one `✗` line when possible; **`off`** = one line per Zod issue (legacy). |
 
 ### Route entry options (each `routes["METHOD /path"]` object)
 
@@ -290,56 +297,8 @@ Successful calls can show a short **✓** line when `mode` is `warn` or `strict`
 | `LogEntry` | `method` / `path` / `routePattern` | Which call this was (GET/POST, full URL, and the pattern you registered) |
 | `LogEntry` | `direction` | **request** = outgoing body, **response** = incoming body |
 | `LogEntry` | `valid` + `errors` | Pass or fail, plus the list of issues |
-| `LogEntry` | `data` | A copy of the JSON after hiding redacted fields |
 | `LogEntry` | `mode` | Same idea as your global mode (observe / warn / strict) |
 | `LogEntry` | `statusCode?` | For responses: the HTTP status number (200, 404, etc.) |
-
----
-
-## Reading logs saved in `memory`
-
-If you set `destinations: ["console", "memory"]`, the interceptor will keep a copy of every matched validation result in RAM.
-
-### Get the logs
-
-```ts
-const logs = interceptor.getLogs();
-console.log(logs); // LogEntry[]
-```
-
-Tip: the latest entry is at the end of the array:
-
-```ts
-const last = interceptor.getLogs().at(-1);
-console.log(last);
-```
-
-### Watch logs as they happen
-
-```ts
-const stop = interceptor.subscribe((entry) => {
-  console.log("New log:", entry);
-});
-
-// later
-stop();
-```
-
-### Clear the in-memory logs
-
-```ts
-interceptor.clearLogs();
-```
-
-### If you used `sharedStore: true`
-
-When `sharedStore` is enabled, the same saved logs can be shared between multiple interceptor instances.
-You can still use `interceptor.getLogs()`, or (optionally) read the shared store directly:
-
-```ts
-import { globalLogStore } from "api-schema-interceptor";
-const logs = globalLogStore.getAll();
-```
 
 ---
 
@@ -349,7 +308,6 @@ The package gives you:
 
 - `createInterceptor(config)` - create an interceptor instance
 - `SchemaInterceptor` - the class (mostly for advanced usage / typing)
-- `LogStore` and `globalLogStore` - where logs are stored (in memory)
 - `enableAxios(axiosInstance, interceptor)` - validate Axios requests/responses
 - `validateMatch(...)` - helper for tests (checks matching + would-validate, without HTTP calls)
 

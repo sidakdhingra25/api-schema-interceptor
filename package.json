@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "test": "node --test"
+    "test": "tsc -p tsconfig.build.json && node --test"
   },
   "dependencies": {},
   "peerDependencies": {

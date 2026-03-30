@@ -1,5 +1,4 @@
 export { SchemaInterceptor } from "./registry";
-export { LogStore, globalLogStore } from "./log-store";
 export { enableAxios } from "./adapters/axios";
 export type {
   InterceptorConfig,
@@ -8,7 +7,7 @@ export type {
   LogEntry,
   ValidationResult,
   FieldError,
-  Destination,
+  ConsoleAggregation,
 } from "./types";
 
 import type { InterceptorConfig, RouteSchema, FieldError } from "./types";

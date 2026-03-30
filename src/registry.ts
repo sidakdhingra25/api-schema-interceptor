@@ -2,17 +2,16 @@ import type {
   RouteSchema,
   InterceptorConfig,
   InterceptorMode,
-  Destination,
   ValidationResult,
   LogEntry,
   FieldError,
   InferRouteTypes,
   InferSchema,
+  ConsoleAggregation,
 } from "./types";
 import { matchRoute, parseRouteKey } from "./path-matcher";
 import { validate } from "./validator";
-import { redact } from "./redactor";
-import { LogStore, globalLogStore } from "./log-store";
+import { printToConsole } from "./log-store";
 
 let idCounter = 0;
 function nextId(): string {
@@ -22,24 +21,19 @@ function nextId(): string {
 export class SchemaInterceptor<TRoutes extends Record<string, RouteSchema>> {
   private routes: Map<string, RouteSchema> = new Map();
   readonly mode: InterceptorMode;
-  private redactKeys: string[];
-  private destinations: Destination[];
-  private store: LogStore;
   private enabled = false;
   private originalFetch?: typeof globalThis.fetch;
   private warnOnUnmatched: boolean;
   private debug: boolean;
+  private consoleAggregation: ConsoleAggregation;
 
   readonly types!: InferRouteTypes<TRoutes>;
 
   constructor(config: InterceptorConfig & { routes: TRoutes }) {
     this.mode = config.mode ?? "observe";
-    this.redactKeys = config.redact ?? [];
-    this.destinations = config.destinations ?? ["console", "memory"];
     this.warnOnUnmatched = config.warnOnUnmatched ?? false;
     this.debug = !!config.debug;
-
-    this.store = config.sharedStore ? globalLogStore : new LogStore();
+    this.consoleAggregation = config.consoleAggregation ?? "array";
 
     for (const [key, schema] of Object.entries(config.routes)) {
       this.routes.set(key, schema);
@@ -134,10 +128,6 @@ export class SchemaInterceptor<TRoutes extends Record<string, RouteSchema>> {
     const routeSchema = direction === "request" ? schema?.request : schema?.response;
     const errors: FieldError[] = routeSchema ? validate(routeSchema, body) : [];
 
-    const safeData = this.redactKeys.length
-      ? redact(body, this.redactKeys)
-      : (body as Record<string, unknown>) ?? {};
-
     const entry: LogEntry = {
       id: nextId(),
       timestamp: Date.now(),
@@ -148,12 +138,11 @@ export class SchemaInterceptor<TRoutes extends Record<string, RouteSchema>> {
       direction,
       valid: errors.length === 0,
       errors,
-      data: typeof safeData === "object" && safeData !== null ? safeData as Record<string, unknown> : {},
       mode: this.mode,
       ...(statusCode !== undefined && { statusCode }),
     };
 
-    this.store.push(entry, this.destinations);
+    printToConsole(entry, this.consoleAggregation);
 
     if (!entry.valid && this.mode === "strict") {
       const msg = errors.map((e) => `${e.path.join(".")}: ${e.message}`).join("; ");
@@ -235,17 +224,5 @@ export class SchemaInterceptor<TRoutes extends Record<string, RouteSchema>> {
       this.originalFetch = undefined;
     }
     this.enabled = false;
-  }
-
-  getLogs() {
-    return this.store.getAll();
-  }
-
-  clearLogs() {
-    this.store.clear();
-  }
-
-  subscribe(fn: (entry: LogEntry) => void) {
-    return this.store.subscribe(fn);
   }
 }

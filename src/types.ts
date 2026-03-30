@@ -42,18 +42,22 @@ export interface RouteSchema {
   validate?: boolean;
 }
 
+/** How validation errors are printed in the boxed FAIL output. Default is `"array"`. */
+export type ConsoleAggregation = "off" | "array";
+
 // ── Config the user passes to createInterceptor ───────
 export interface InterceptorConfig {
   mode?: InterceptorMode;
   routes: Record<string, RouteSchema>;
-  redact?: string[];
-  destinations?: Destination[];
-  sharedStore?: boolean;
   warnOnUnmatched?: boolean;
   debug?: boolean;
+  /**
+   * `"array"` (default): collapse repeated array-element failures that share the same
+   * structural issue into one console line when possible.
+   * `"off"`: one line per `FieldError` (legacy layout).
+   */
+  consoleAggregation?: ConsoleAggregation;
 }
-
-export type Destination = "console" | "memory";
 
 // ── Validation result returned per field ──────────────
 export interface FieldError {
@@ -73,7 +77,6 @@ export interface LogEntry {
   direction: "request" | "response";
   valid: boolean;
   errors: FieldError[];
-  data: Record<string, unknown>;
   mode: InterceptorMode;
   statusCode?: number;
 }
