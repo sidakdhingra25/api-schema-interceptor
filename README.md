@@ -1,10 +1,13 @@
 ## API Lens
 
+Type-safe APIs from request to response.
 
 This package helps you validate your API requests and responses against your Zod schemas.
 When a call matches a route you registered, it checks the JSON and reports failures in the console (successful validation stays quiet).
 
 It is designed to be easy to plug into apps that use `fetch`.
+
+**Documentation:** [api-lens.xyz](https://api-lens.xyz)
 
 
 ---
